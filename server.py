@@ -1,54 +1,54 @@
 #!/usr/bin/env python3
-"""Serve TCP-Railway VLESS UI + status/probe APIs, alongside xray.
+"""Ultra-minimal config-echo server for TCP-Railway VLESS.
 
 Routes:
-  /             -> index.html (the English UI)
-  /api/status   -> JSON: {"router":true,"xray":bool,"port":int}
-  /api/probe    -> POST {"host","port"} -> {"ok":bool}  (raw TCP connect test)
+  GET /            -> plain-text: which port xray runs on + how to build a link
+  GET /config?host=HOST:PORT  -> the ready vless:// link (plain text)
+  GET /api/status  -> JSON: {"xray":bool,"port":int,"uuid":str}
+
+Serves on :8080 (Railway HTTP domain); xray runs separately on XRAY_PORT (5432).
 """
 import asyncio
 import json
 import os
-import socket
 
 HOST = "0.0.0.0"
-# UI server port — must NOT collide with the xray VLESS-TCP port (XRAY_PORT).
-# Railway injects PORT=8080 for the HTTP domain, but exposing a TCP proxy can
-# clobber PORT. So bind the UI to a dedicated port: honour UI_PORT, else PORT
-# only when it isn't the xray port, else 8080.
+PORT = int(os.environ.get("PORT", os.environ.get("UI_PORT", "8080")))
 XRAY_PORT = int(os.environ.get("XRAY_PORT", "5432"))
+UUID = os.environ.get("UUID", "8f2c1e6a-4b7d-4a9e-b3f1-c5d8e7a91234")
 
-def _first_int(*names, _default=8080):
-    for n in names:
-        v = os.environ.get(n, "")
-        try:
-            return int(v)
-        except Exception:
-            continue
-    return _default
-
-_ui = _first_int("UI_PORT")
-_p  = _first_int("PORT")
-if _ui is not None and _ui != XRAY_PORT:
-    PORT = _ui
-elif _p is not None and _p != XRAY_PORT and _p not in (0,):
-    PORT = _p
-else:
+# ensure UI port never collides with the xray port
+if PORT == XRAY_PORT:
     PORT = 8080
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-INDEX = os.path.join(HERE, "index.html")
+
+def vless_link(hostport):
+    hostport = hostport.strip()
+    # strip a leading "vless://" scheme if present (string-prefix, not lstrip chars)
+    if hostport.startswith("vless://"):
+        hostport = hostport[len("vless://"):]
+    hostport = hostport.lstrip("@")
+    return (f"vless://{UUID}@{hostport}"
+            f"?security=none&type=tcp&headerType=none&encryption=none"
+            f"#tcp-railway")
 
 
-async def probe_host(host, port, timeout=3.0):
-    """Raw TCP connect test (returns True if the port accepts connections)."""
+async def probe_xray():
     try:
         r, w = await asyncio.wait_for(
-            asyncio.open_connection(host, port), timeout=timeout)
+            asyncio.open_connection("127.0.0.1", XRAY_PORT), timeout=2.0)
         w.close()
         return True
     except Exception:
         return False
+
+
+def _send(writer, body, ctype="text/plain; charset=utf-8", code=200):
+    reason = {200: "OK", 400: "Bad Request"}[code]
+    resp = (f"HTTP/1.1 {code} {reason}\r\nContent-Type: {ctype}\r\n"
+            f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n"
+            f"{body}").encode()
+    writer.write(resp)
 
 
 async def handle(reader, writer):
@@ -64,51 +64,48 @@ async def handle(reader, writer):
             return
         method, target = parts[0], parts[1]
         path = target.split("?")[0]
+        query = target.split("?", 1)[1] if "?" in target else ""
 
         if path == "/api/status":
-            body = json.dumps({
-                "router": True,
-                "xray": await probe_host("127.0.0.1", XRAY_PORT),
-                "port": XRAY_PORT,
-            }).encode()
-            resp = (b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
-                    b"Access-Control-Allow-Origin: *\r\nContent-Length: "
-                    + str(len(body)).encode() + b"\r\n\r\n" + body)
-            writer.write(resp)
+            body = json.dumps({"xray": await probe_xray(),
+                               "port": XRAY_PORT, "uuid": UUID})
+            _send(writer, body, "application/json")
             await writer.drain()
             writer.close()
             return
 
-        if path == "/api/probe" and method == "POST":
-            body_bytes = req.split(b"\r\n\r\n", 1)[1] if b"\r\n\r\n" in req else b""
-            try:
-                payload = json.loads(body_bytes.decode("utf-8", "replace") or "{}")
-            except Exception:
-                payload = {}
-            host = (payload.get("host") or "").strip()
-            try:
-                port = int(payload.get("port", 443))
-            except Exception:
-                port = 443
-            ok = bool(host) and await probe_host(host, port)
-            body = json.dumps({"ok": ok, "host": host, "port": port}).encode()
-            resp = (b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
-                    b"Access-Control-Allow-Origin: *\r\nContent-Length: "
-                    + str(len(body)).encode() + b"\r\n\r\n" + body)
-            writer.write(resp)
+        if path == "/config":
+            # parse ?host=HOST:PORT
+            host = ""
+            for kv in query.split("&"):
+                if kv.startswith("host="):
+                    host = kv.split("=", 1)[1].replace("+", " ").strip()
+            if not host:
+                body = ("error: pass ?host=HOST:PORT "
+                        "(e.g. /config?host=sakura.proxy.rlwy.net:17505)")
+                _send(writer, body, code=400)
+            else:
+                _send(writer, vless_link(host))
             await writer.drain()
             writer.close()
             return
 
-        # default: serve index.html
-        try:
-            with open(INDEX, "rb") as f:
-                body = f.read()
-        except FileNotFoundError:
-            body = b"index.html not found"
-        resp = (b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n"
-                b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body)
-        writer.write(resp)
+        # / -> plain instructions
+        body = (
+            "TCP-Railway VLESS\n"
+            "=================\n"
+            "xray (VLESS over raw TCP) listens on:\n"
+            f"  host: 0.0.0.0    port: {XRAY_PORT}    uuid: {UUID}\n\n"
+            "On Railway, add a TCP Proxy whose INTERNAL port = "
+            f"{XRAY_PORT},\nand note its PUBLIC port (e.g. sakura.proxy.rlwy.net:17505).\n\n"
+            "Build the client link:\n"
+            f"  GET /config?host=YOUR_HOST:PORT\n"
+            "where YOUR_HOST:PORT is the TCP proxy public address.\n"
+            "Example:\n"
+            "  /config?host=sakura.proxy.rlwy.net:17505\n\n"
+            "=> returns a ready vless:// link to import.\n"
+        )
+        _send(writer, body)
         await writer.drain()
         writer.close()
     except Exception:
@@ -120,7 +117,7 @@ async def handle(reader, writer):
 
 async def main():
     srv = await asyncio.start_server(handle, HOST, PORT)
-    print(f"[ui-srv] http://{HOST}:{PORT}  (xray_port={XRAY_PORT})")
+    print(f"[ui] http://{HOST}:{PORT}  xray_port={XRAY_PORT}")
     async with srv:
         await srv.serve_forever()
 

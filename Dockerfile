@@ -4,6 +4,11 @@ RUN curl -L -o /tmp/xray.zip https://github.com/XTLS/Xray-core/releases/download
     unzip /tmp/xray.zip -d /tmp/xray && cp /tmp/xray/xray /usr/local/bin/xray && chmod +x /usr/local/bin/xray && rm -rf /tmp/xray*
 RUN mkdir -p /app/xray
 COPY entrypoint.sh /app/entrypoint.sh
+COPY server.py /app/server.py
+COPY index.html /app/index.html
 RUN chmod +x /app/entrypoint.sh
+# UI (HTTP, public on Railway)
+EXPOSE 8080
+# xray VLESS-TCP (internal; Railway TCP proxy maps here)
 EXPOSE 5432
 CMD ["/app/entrypoint.sh"]

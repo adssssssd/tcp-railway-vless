@@ -12,8 +12,29 @@ import os
 import socket
 
 HOST = "0.0.0.0"
-PORT = int(os.environ.get("PORT", "8080"))
+# UI server port — must NOT collide with the xray VLESS-TCP port (XRAY_PORT).
+# Railway injects PORT=8080 for the HTTP domain, but exposing a TCP proxy can
+# clobber PORT. So bind the UI to a dedicated port: honour UI_PORT, else PORT
+# only when it isn't the xray port, else 8080.
 XRAY_PORT = int(os.environ.get("XRAY_PORT", "5432"))
+
+def _first_int(*names, _default=8080):
+    for n in names:
+        v = os.environ.get(n, "")
+        try:
+            return int(v)
+        except Exception:
+            continue
+    return _default
+
+_ui = _first_int("UI_PORT")
+_p  = _first_int("PORT")
+if _ui is not None and _ui != XRAY_PORT:
+    PORT = _ui
+elif _p is not None and _p != XRAY_PORT and _p not in (0,):
+    PORT = _p
+else:
+    PORT = 8080
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 INDEX = os.path.join(HERE, "index.html")

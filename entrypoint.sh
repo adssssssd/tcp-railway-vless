@@ -1,21 +1,30 @@
 #!/bin/bash
 set -euo pipefail
 
-# ---- xray: VLESS over raw TCP on the port the Railway TCP proxy maps to ----
+# ---- xray: VLESS over raw TCP — EXACT same config that works on the hermes box ----
 UUID="${UUID:-8f2c1e6a-4b7d-4a9e-b3f1-c5d8e7a91234}"
 XRAY_PORT="${XRAY_PORT:-5432}"
 
 cat > /app/xray/config.json <<EOF
 {
-  "log": {"loglevel": "warning"},
-  "inbounds": [{
-    "listen": "0.0.0.0",
-    "port": ${XRAY_PORT},
-    "protocol": "vless",
-    "settings": {"clients": [{"id": "${UUID}", "flow": ""}], "decryption": "none"},
-    "streamSettings": {"network": "tcp", "security": "none", "tcpSettings": {"header": {"type": "none"}}}
-  }],
-  "outbounds": [{"protocol": "freedom", "settings": {}}]
+  "log": { "loglevel": "warning" },
+  "inbounds": [
+    {
+      "listen": "0.0.0.0",
+      "port": ${XRAY_PORT},
+      "protocol": "vless",
+      "settings": {
+        "clients": [ { "id": "${UUID}", "flow": "" } ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "none",
+        "tcpSettings": { "header": { "type": "none" } }
+      }
+    }
+  ],
+  "outbounds": [ { "protocol": "freedom", "settings": {} } ]
 }
 EOF
 
@@ -32,8 +41,5 @@ if ! kill -0 "$XRAY_PID" 2>/dev/null; then
 fi
 echo "[entrypoint] xray up (pid $XRAY_PID)"
 
-# ---- UI server in foreground (Railway maps :8080) ----
-# UI_PORT is honoured if set; otherwise the server picks a safe port that
-# doesn't collide with the xray port.
-export PORT XRAY_PORT
-exec python3 /app/server.py
+# ---- tiny config-echo UI in foreground (Railway HTTP domain -> :8080) ----
+PORT="${PORT:-8080}" XRAY_PORT="${XRAY_PORT}" UUID="${UUID}" exec python3 /app/server.py

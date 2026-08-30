@@ -33,4 +33,7 @@ fi
 echo "[entrypoint] xray up (pid $XRAY_PID)"
 
 # ---- UI server in foreground (Railway maps :8080) ----
-PORT="${PORT:-8080}" XRAY_PORT="${XRAY_PORT}" exec python3 /app/server.py
+# UI_PORT is honoured if set; otherwise the server picks a safe port that
+# doesn't collide with the xray port.
+export PORT XRAY_PORT
+exec python3 /app/server.py
